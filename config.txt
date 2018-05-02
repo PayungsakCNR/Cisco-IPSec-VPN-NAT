@@ -1,0 +1,143 @@
+!
+hostname PaOv6-VPN-Server
+!
+!
+aaa new-model
+!
+!
+aaa authentication login vpn-group local
+aaa authorization network vpn-group local
+!
+!
+!
+!
+!
+ip domain name vpn-server.payungsakpk.xyz
+ip name-server 10.10.200.254
+ip name-server 10.10.56.10
+ip cef
+!
+!
+/* Key for EIGRP authen */
+key chain eigrp-chain
+ key 1
+  key-string 7 [pao-key-for-eigrp-route]
+!
+!
+/* Username password for VPN login,should't priviledge 15 (I'm config to priviledge 15,i'm net admin!!) */
+username PaO_CNR privilege 15 secret 5 [pao-password@my-vpn-server]
+username admin privilege 15 secret 5 [my-password@my-vpn-server-xxx]
+!
+!
+/*define crypto policy */
+crypto isakmp policy 100
+ encr 3des
+ authentication pre-share
+ group 2
+crypto isakmp keepalive 10 periodic
+crypto isakmp nat keepalive 15
+!
+/* define vpn client config,"netadmin" is a group name */
+crypto isakmp client configuration group netadmin 
+ key pao-vpn-key /* key for connect */
+ dns 10.10.200.254 10.10.56.10 /* set dns for vpn client */
+ domain payungsakpk.xyz /* set domain for vpn client(optional) */
+ pool vpn-pool /* set ip pool vpn client */
+ save-password /* set if allow user to save his/her password,not input everytimes */
+ max-logins 5
+ netmask 255.255.255.0 /* set netmask if not set default is "255.0.0.0" */
+/* define isakmp profile */
+crypto isakmp profile vpn-ike-pao-profile-1
+   match identity group netadmin /* match vpn client config group */
+   client authentication list vpn-group
+   isakmp authorization list vpn-group
+   client configuration address respond
+   virtual-template 2 /* set virtual-template 2 */
+!
+!
+/* define transform-set and use IPSec mode tunnle */
+crypto ipsec transform-set netadmin-vpn-transform esp-3des esp-sha-hmac
+ mode tunnel
+!
+!
+/* define ipsec profile */
+crypto ipsec profile netadmin-vpn
+ set transform-set netadmin-vpn-transform
+!
+!
+/*define dynamic map,set transfome-set and revers-route */
+crypto dynamic-map dynamic-netadmin-vpn 10
+ set transform-set netadmin-vpn-transform
+ reverse-route 
+!
+!
+/* map any crypto config */
+crypto map netadmin-vpn-map client authentication list vpn-group
+crypto map netadmin-vpn-map isakmp authorization list vpn-group
+crypto map netadmin-vpn-map client configuration address respond
+crypto map netadmin-vpn-map 10 ipsec-isakmp dynamic dynamic-netadmin-vpn
+!
+/* loopback for EIGRP router-id */
+interface Loopback0
+ ip address 10.255.255.14 255.255.255.255
+!
+/* WAN interface */ 
+interface GigabitEthernet0/0
+ ip address 203.156.77.77 255.255.255.0
+ ip nat outside /* NAT set */
+ ip virtual-reassembly in
+ duplex auto
+ speed auto
+ media-type rj45
+ crypto map netadmin-vpn-map /* set crypto map */
+!
+!
+/* Point-to-Point interface for route into LAN network */
+interface GigabitEthernet0/1
+ ip address 192.168.98.14 255.255.255.252
+ ip authentication mode eigrp 1 md5 /* set EIGRP authen mode */
+ ip authentication key-chain eigrp 1 eigrp-chain /*set EIGRP key-chain */
+ ip virtual-reassembly in
+ duplex auto
+ speed auto
+ media-type rj45
+!
+!
+/* Virtual-Template2 config */
+interface Virtual-Template2 type tunnel /* must set to tunnel mode !! */
+ ip unnumbered GigabitEthernet0/0 /* set WAN interface for incoming IPSec VPN Packet*/ 
+ ip nat inside /* NAT set */
+ ip virtual-reassembly in
+ tunnel mode ipsec ipv4 /* set IPSec tunnel mode in ipv4 */
+ tunnel protection ipsec profile netadmin-vpn /* set IPSec profile */
+!
+!
+/*define EIGRP AS */
+router eigrp 1 /* I'm use AS 1 */
+ network 192.168.98.12 0.0.0.3
+ network 10.255.255.14 0.0.0.0
+
+ /* redistrubute vpn client ip address for route to LAN network */
+ redistribute static metric 150 20 20 200 50000 route-map vpn55
+ eigrp router-id 10.255.255.14
+!
+!
+!
+/* define vpn client ip pool */
+ip local pool vpn-pool 10.10.55.10 10.10.55.30
+
+/* set default route,shuuld't if eigrp receive default route*/
+ip route 0.0.0.0 0.0.0.0 203.156.77.1 name Default-Route-to-Core-Router
+
+/* NAT vpn client network with WAN interface*/
+ip nat inside source list nat-vpn interface GigabitEthernet0/0 overload
+
+/*define vpn client network ACL */
+ip access-list standard vpn55
+ permit 10.10.55.0 0.0.0.255
+
+/* define route map for redistribute */
+route-map vpn55 permit 20
+ description Route-Map-Redistrubute-VPN55-Connected
+ match ip address vpn55
+!
